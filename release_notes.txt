@@ -1,3 +1,61 @@
+Version 4.1.1:
+DLL Rollback Compatibility Warning:
+  - New feature that warns you before updating to a DLL version you've already rolled back from
+    in multiple other games — a strong signal that this specific version may cause issues on
+    your system.
+  - Before starting an update, the app cross-references the target DLL version against your
+    own rollback history. If you've reverted from v{target} of the same DLL in two or more
+    other games within the past 48 hours, a warning dialog lists the affected games and lets
+    you choose: Cancel, Skip flagged DLLs, or Update anyway.
+  - Inline amber "Rolled back in N games" chip appears in the DLL Details dialog next to any
+    DLL whose latest version matches a version you've recently rolled back from.
+  - Pure local SQL — no telemetry, no cloud service, no data leaves your machine. The signal
+    is entirely derived from your own restore actions.
+  - Handles repo updates gracefully: if a newer version ships later, old flags naturally
+    expire as they no longer match the current target version.
+  - Database migration adds `restored_at` and `post_update_version` columns to `dll_backups`;
+    existing backups are preserved.
+
+Rollback Warning Fixes:
+  - Fixed: the rollback compatibility detection was keying on `original_version` (the version
+    you rolled back TO) instead of `post_update_version` (the version you rolled back FROM).
+    Warnings now correctly fire when you're about to update to a version you've previously
+    rolled back from.
+  - Changed the flag threshold from ">=2 distinct games" to ">=2 total rollback events"
+    for the same (DLL, version). DLLs are vendor-signed, so the same version is identical
+    across every game it ships in — a bad version is bad universally, regardless of which
+    game(s) you rolled it back from. This also means small libraries actually benefit from
+    the warning, and repeated rollbacks of the same DLL in a single game count as the
+    signal they are.
+  - Warning dialog and inline chip now show event count (e.g. "Rolled back 3x") and the
+    distinct games affected as context.
+
+DLL Details Dialog Backup Sync Fix:
+  - Fixed: the per-game DLL details dialog (opened by tapping the status badge on a game
+    card) showed stale "backed up" state for each DLL after recent updates or restores —
+    the dialog was refreshing current DLL versions from disk but reusing the cached
+    backup_groups from when the card was built. It now re-queries backup groups from the
+    database on every open, so the Restore-per-DLL options reflect the current DB state
+    without waiting for an app restart.
+
+Update/Restore Button Sync Fixes:
+  - The per-game Update button no longer stays enabled when all DLLs are already at the latest
+    version. It now disables (with an "All DLLs are up to date" tooltip) and the dropdown only
+    lists groups that actually have an outdated DLL.
+  - After a successful update, the Restore menu is immediately refreshed to include the newly
+    created backups — previously you had to re-open the view for them to appear.
+  - "Refresh all badges" now re-fetches backup groups via a single batched query, keeping
+    Restore menus in sync after global updates too.
+  - The Update button's state (items + enabled/disabled + colors) is now rebuilt in-place
+    whenever DLLs change, so it stays accurate after any update or restore.
+
+Flatpak Runtime Upgrade (Issue #204):
+  - Upgraded Freedesktop Platform/SDK from 24.08 to 25.08. The 24.08 runtime is no longer
+    installable on newer Fedora versions, causing "runtime org.freedesktop.Platform/x86_64/24.08
+    which was not found" errors during install.
+  - 25.08 brings glibc 2.42 and GCC 15.1, and natively ships libsecret (required by Flet's
+    flutter_secure_storage); the bundled libsecret module is retained for forward compatibility.
+
 Version 4.1.0:
 Personal Game Ignore List (Issue #194):
   - Added per-game ignore toggle on each game card (eye icon) to exclude

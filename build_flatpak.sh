@@ -69,18 +69,18 @@ echo -e "\n${YELLOW}[2/6] Setting up Flathub repository and SDK...${NC}"
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
 # Check if SDK is installed
-if ! flatpak list --user | grep -q "org.freedesktop.Sdk//24.08"; then
-    echo "Installing Freedesktop SDK 24.08..."
-    flatpak install --user -y flathub org.freedesktop.Sdk//24.08
+if ! flatpak list --user | grep -q "org.freedesktop.Sdk//25.08"; then
+    echo "Installing Freedesktop SDK 25.08..."
+    flatpak install --user -y flathub org.freedesktop.Sdk//25.08
 else
-    echo -e "${GREEN}Freedesktop SDK 24.08 already installed${NC}"
+    echo -e "${GREEN}Freedesktop SDK 25.08 already installed${NC}"
 fi
 
-if ! flatpak list --user | grep -q "org.freedesktop.Platform//24.08"; then
-    echo "Installing Freedesktop Platform 24.08..."
-    flatpak install --user -y flathub org.freedesktop.Platform//24.08
+if ! flatpak list --user | grep -q "org.freedesktop.Platform//25.08"; then
+    echo "Installing Freedesktop Platform 25.08..."
+    flatpak install --user -y flathub org.freedesktop.Platform//25.08
 else
-    echo -e "${GREEN}Freedesktop Platform 24.08 already installed${NC}"
+    echo -e "${GREEN}Freedesktop Platform 25.08 already installed${NC}"
 fi
 
 # =============================================================================

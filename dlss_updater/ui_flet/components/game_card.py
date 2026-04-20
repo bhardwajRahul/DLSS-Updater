@@ -431,10 +431,28 @@ class GameCard(ThemeAwareMixin, ft.Card):
         )
 
     def _get_dll_groups_for_game(self) -> list[str]:
-        """Get unique DLL technology groups present in this game"""
+        """Get DLL groups with at least one outdated DLL (unknown versions count as updatable)."""
+        from dlss_updater.config import LATEST_DLL_VERSIONS
+        from dlss_updater.updater import parse_version
+
         groups_present = set()
         for dll in self.dlls:
             dll_filename = dll.dll_filename.lower() if dll.dll_filename else ""
+            if not dll_filename:
+                continue
+
+            needs_update = True
+            if dll.current_version:
+                latest = LATEST_DLL_VERSIONS.get(dll_filename)
+                if latest:
+                    try:
+                        if parse_version(dll.current_version) >= parse_version(latest):
+                            needs_update = False
+                    except Exception:
+                        pass
+            if not needs_update:
+                continue
+
             for group_name, group_dlls in DLL_GROUPS.items():
                 if dll_filename in [d.lower() for d in group_dlls]:
                     groups_present.add(group_name)
@@ -447,14 +465,16 @@ class GameCard(ThemeAwareMixin, ft.Card):
         Menu items are populated upfront since Flet's on_open fires after rendering.
         """
         is_dark = self._registry.is_dark
-        primary_color = MD3Colors.get_primary(is_dark)
+        has_outdated = self._check_for_updates()
+        disabled_color = MD3Colors.get_themed("text_tertiary", is_dark)
+        active_color = MD3Colors.get_primary(is_dark)
+        color = active_color if has_outdated else disabled_color
 
         # Store references for theming
-        self.update_button_icon = ft.Icon(ft.Icons.UPDATE, size=18, color=primary_color)
-        self.update_button_text = ft.Text("Update", size=14, color=primary_color)
-        self.update_button_arrow = ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18, color=primary_color)
+        self.update_button_icon = ft.Icon(ft.Icons.UPDATE, size=18, color=color)
+        self.update_button_text = ft.Text("Update", size=14, color=color)
+        self.update_button_arrow = ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18, color=color)
 
-        # Use content property to show "Update" text instead of just an icon
         return ft.PopupMenuButton(
             content=ft.Row(
                 controls=[
@@ -465,14 +485,18 @@ class GameCard(ThemeAwareMixin, ft.Card):
                 spacing=4,
                 tight=True,
             ),
-            tooltip="Select DLLs to update",
+            tooltip="Select DLLs to update" if has_outdated else "All DLLs are up to date",
             items=self._build_update_menu_items(),
+            disabled=not has_outdated,
         )
 
     def _build_update_menu_items(self) -> list[ft.PopupMenuItem]:
-        """Build the actual update menu items (extracted from _create_update_popup_menu)."""
+        """Build update menu items — only groups with at least one outdated DLL appear."""
         is_dark = self._registry.is_dark
         groups = self._get_dll_groups_for_game()
+
+        if not groups:
+            return []
 
         menu_items = [
             ft.PopupMenuItem(
@@ -480,32 +504,28 @@ class GameCard(ThemeAwareMixin, ft.Card):
                 icon=ft.Icons.UPDATE,
                 on_click=lambda e: self._on_update_group_selected("all"),
             ),
+            ft.PopupMenuItem(),  # Divider
         ]
 
-        # Add divider and group-specific options if we have groups
-        if groups:
-            menu_items.append(ft.PopupMenuItem())  # Divider
-
-            for group in groups:
-                color = TechnologyColors.get_themed_color(group, is_dark)
-                # Create a colored container as leading element
-                menu_items.append(
-                    ft.PopupMenuItem(
-                        content=ft.Row(
-                            controls=[
-                                ft.Container(
-                                    width=8,
-                                    height=8,
-                                    bgcolor=color,
-                                    border_radius=4,
-                                ),
-                                ft.Text(f"Update {group}", size=14),
-                            ],
-                            spacing=8,
-                        ),
-                        on_click=lambda e, g=group: self._on_update_group_selected(g),
-                    )
+        for group in groups:
+            color = TechnologyColors.get_themed_color(group, is_dark)
+            menu_items.append(
+                ft.PopupMenuItem(
+                    content=ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=8,
+                                height=8,
+                                bgcolor=color,
+                                border_radius=4,
+                            ),
+                            ft.Text(f"Update {group}", size=14),
+                        ],
+                        spacing=8,
+                    ),
+                    on_click=lambda e, g=group: self._on_update_group_selected(g),
                 )
+            )
 
         return menu_items
 
@@ -657,8 +677,8 @@ class GameCard(ThemeAwareMixin, ft.Card):
         from dlss_updater.ui_flet.dialogs.dll_group_dialog import DLLGroupDialog
         from dlss_updater.database import db_manager
 
-        # Refresh DLL versions from filesystem before showing dialog
-        # This ensures displayed versions match actual files (fixes Bug 5: stale cache)
+        # Refresh DLL versions and backup groups from DB before showing dialog
+        # so the dialog reflects any updates/restores that happened since last render.
         try:
             refreshed_dlls = await db_manager.refresh_dll_versions_for_game(self.game.id)
             if refreshed_dlls:
@@ -666,7 +686,12 @@ class GameCard(ThemeAwareMixin, ft.Card):
                 self.logger.debug(f"Refreshed {len(refreshed_dlls)} DLL versions for {self.game.name}")
         except Exception as e:
             self.logger.warning(f"Failed to refresh DLL versions: {e}")
-            # Continue with existing dlls if refresh fails
+
+        try:
+            self.backup_groups = await db_manager.get_backups_grouped_by_dll_type(self.game.id)
+            self.has_backups = bool(self.backup_groups)
+        except Exception as e:
+            self.logger.warning(f"Failed to refresh backup groups: {e}")
 
         # Determine which game object to pass (MergedGame or Game)
         game_to_show = self.merged_game if self.merged_game else self.game
@@ -869,7 +894,7 @@ class GameCard(ThemeAwareMixin, ft.Card):
             self.update_button.update()
 
     async def refresh_dlls(self, new_dlls: list[GameDLL]):
-        """Refresh DLL badges with new data after update (async for UI lock)"""
+        """Refresh DLL badges and update button with new data after update/restore."""
         async with self._ui_lock:
             self.dlls = new_dlls
 
@@ -880,6 +905,29 @@ class GameCard(ThemeAwareMixin, ft.Card):
             if self.right_content and len(self.right_content.controls) >= 2:
                 self.right_content.controls[1] = new_badges
                 self.dll_badges_container = new_badges
+
+            # Rebuild update button in-place so menu items and enabled state reflect
+            # current DLL versions. Keep disabled if game is ignored.
+            if self.update_button:
+                has_outdated = self._check_for_updates()
+                is_dark = self._registry.is_dark
+                disabled_color = MD3Colors.get_themed("text_tertiary", is_dark)
+                active_color = MD3Colors.get_primary(is_dark)
+                color = active_color if has_outdated else disabled_color
+
+                self.update_button.items = self._build_update_menu_items()
+                self.update_button.disabled = self.is_ignored or not has_outdated
+                self.update_button.tooltip = (
+                    "Select DLLs to update" if has_outdated else "All DLLs are up to date"
+                )
+                if self.update_button_icon:
+                    self.update_button_icon.color = color
+                if self.update_button_text:
+                    self.update_button_text.color = color
+                if self.update_button_arrow:
+                    self.update_button_arrow.color = color
+
+            if self.right_content:
                 self.right_content.update()
 
     async def refresh_restore_button(self, new_backup_groups: dict[str, list]):

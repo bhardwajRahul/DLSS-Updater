@@ -31,6 +31,12 @@ logger = setup_logger()
 # Thread-safety lock for singleton pattern (free-threading Python 3.14+)
 _db_manager_lock = threading.Lock()
 
+# Rollback detection thresholds
+# A (dll_filename, version) is flagged when >= THRESHOLD distinct games rolled back
+# to it within WINDOW_DAYS after updating to a version newer than it.
+ROLLBACK_FLAG_THRESHOLD = 2
+ROLLBACK_WINDOW_DAYS = 2.0
+
 
 def merge_games_by_name(games: list[Game]) -> list[MergedGame]:
     """Merge games with same name (case-insensitive) into MergedGame entries.
@@ -451,6 +457,18 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+            # Migration: Rollback detection columns on dll_backups
+            try:
+                cursor.execute("ALTER TABLE dll_backups ADD COLUMN restored_at TIMESTAMP")
+                logger.info("Migration: Added restored_at column to dll_backups table")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE dll_backups ADD COLUMN post_update_version TEXT")
+                logger.info("Migration: Added post_update_version column to dll_backups table")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             # One-time migration: mark existing Steam-launcher games with app IDs as manifest-resolved
             cursor.execute("""
                 UPDATE games SET resolution_source = 'manifest'
@@ -469,6 +487,8 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_dll_backups_active ON dll_backups(is_active)")
             # Composite index for backup queries that filter by game_dll_id AND is_active
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_dll_backups_game_dll_active ON dll_backups(game_dll_id, is_active)")
+            # Index for rollback flag detection (filter by restored_at IS NOT NULL)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_dll_backups_restored_at ON dll_backups(restored_at) WHERE restored_at IS NOT NULL")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_update_history_game_dll_id ON update_history(game_dll_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_steam_name ON steam_app_list(name COLLATE NOCASE)")
 
@@ -1979,6 +1999,162 @@ class DatabaseManager:
             conn.rollback()
         finally:
             conn.close()
+
+    async def mark_backup_restored(self, backup_id: int):
+        """Mark backup as inactive AND record the restore timestamp.
+
+        This is the canonical way to indicate a user performed a rollback.
+        Distinguishes user-initiated rollbacks from administrative deactivations.
+        """
+        return await asyncio.to_thread(self._mark_backup_restored, backup_id)
+
+    def _mark_backup_restored(self, backup_id: int):
+        """Mark backup restored (runs in thread)."""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE dll_backups
+                SET is_active = 0,
+                    restored_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (backup_id,))
+
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error marking backup restored: {e}", exc_info=True)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    async def record_post_update_version(self, dll_path: str, post_update_version: str):
+        """Record the version a DLL was updated to, on the most recent active backup.
+
+        Used by rollback detection: pairs `original_version` (what the user rolled back TO)
+        with `post_update_version` (what they rolled back FROM).
+        """
+        return await asyncio.to_thread(self._record_post_update_version, dll_path, post_update_version)
+
+    def _record_post_update_version(self, dll_path: str, post_update_version: str):
+        """Record post-update version (runs in thread).
+
+        Targets the most recent active backup for this dll_path. If none is active
+        (e.g. update without backup), silently no-ops — rollback detection needs the
+        backup anyway.
+        """
+        if not post_update_version:
+            return
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE dll_backups
+                SET post_update_version = ?
+                WHERE id = (
+                    SELECT b.id FROM dll_backups b
+                    JOIN game_dlls d ON b.game_dll_id = d.id
+                    WHERE d.dll_path = ? AND b.is_active = 1
+                    ORDER BY b.backup_created_at DESC
+                    LIMIT 1
+                )
+            """, (post_update_version, dll_path))
+            conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error recording post-update version: {e}", exc_info=True)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    async def get_flagged_dll_versions(
+        self,
+        threshold: int = ROLLBACK_FLAG_THRESHOLD,
+        window_days: float = ROLLBACK_WINDOW_DAYS,
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Get DLL versions flagged as likely-problematic based on user's rollback history.
+
+        DLLs are vendor-signed, so a given (dll_filename, version) is identical across
+        every game it ships in — a bad version is bad universally. A (dll_filename,
+        post_update_version) is flagged when >= threshold total rollback events target
+        it within window_days of updating away from it (may be the same game multiple
+        times, different games, or any mix).
+
+        Returns:
+            Dict keyed by (dll_filename, post_update_version) → {
+                'count': int,          # Total rollback events (rows) for this version
+                'games': list[str],    # Distinct game names affected (for display)
+                'from_versions': list[str],  # Versions user rolled back TO
+            }
+        """
+        return await asyncio.to_thread(self._get_flagged_dll_versions, threshold, window_days)
+
+    def _get_flagged_dll_versions(
+        self,
+        threshold: int = ROLLBACK_FLAG_THRESHOLD,
+        window_days: float = ROLLBACK_WINDOW_DAYS,
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Get flagged DLL versions (runs in thread).
+
+        Groups restored backups by (dll_filename, post_update_version) and flags when
+        the total rollback event count >= threshold. Vendor-signed DLLs don't differ
+        between games, so each rollback event is an independent vote against the
+        version, regardless of which game it came from.
+        """
+        conn = self._get_thread_connection()
+        cursor = conn.cursor()
+
+        try:
+            window_hours = window_days * 24.0
+            cursor.execute("""
+                SELECT
+                    d.dll_filename,
+                    b.original_version,
+                    b.post_update_version,
+                    g.name AS game_name,
+                    g.id AS game_id
+                FROM dll_backups b
+                JOIN game_dlls d ON b.game_dll_id = d.id
+                JOIN games g ON d.game_id = g.id
+                WHERE b.restored_at IS NOT NULL
+                  AND b.post_update_version IS NOT NULL
+                  AND b.post_update_version != ''
+                  AND (JULIANDAY(b.restored_at) - JULIANDAY(b.backup_created_at)) * 24.0 <= ?
+            """, (window_hours,))
+
+            rows = cursor.fetchall()
+
+            grouped: dict[tuple[str, str], dict[str, Any]] = {}
+            for dll_filename, original_version, post_update_version, game_name, game_id in rows:
+                key = (dll_filename, post_update_version)
+                entry = grouped.setdefault(key, {
+                    'event_count': 0,
+                    'game_ids': set(),
+                    'games': [],
+                    'from_versions': set(),
+                })
+                entry['event_count'] += 1
+                if game_id not in entry['game_ids']:
+                    entry['game_ids'].add(game_id)
+                    entry['games'].append(game_name)
+                if original_version:
+                    entry['from_versions'].add(original_version)
+
+            flagged: dict[tuple[str, str], dict[str, Any]] = {}
+            for key, entry in grouped.items():
+                if entry['event_count'] >= threshold:
+                    flagged[key] = {
+                        'count': entry['event_count'],
+                        'games': entry['games'],
+                        'from_versions': sorted(entry['from_versions']),
+                    }
+            return flagged
+
+        except Exception as e:
+            logger.error(f"Error getting flagged DLL versions: {e}", exc_info=True)
+            return {}
 
     async def cleanup_duplicate_backups(self):
         """

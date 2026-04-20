@@ -64,6 +64,23 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="4.1.1" date="2026-04-20">
+      <description>
+        <p>DLL rollback compatibility warning and Flatpak runtime upgrade (Issue #204)</p>
+        <ul>
+          <li>New DLL Rollback Compatibility Warning: before updating, the app cross-references the target DLL version against your own restore history and warns you if you've rolled back from that exact version in two or more other games within the past 48 hours</li>
+          <li>Warning dialog offers three choices: Cancel, Skip flagged DLLs, or Update anyway — the decision is yours</li>
+          <li>Inline amber badge in the DLL Details dialog flags any DLL whose latest version matches a version you've recently rolled back from</li>
+          <li>All detection is local SQL against your own backup history — no telemetry, nothing leaves your machine</li>
+          <li>Upgraded Flatpak runtime from Freedesktop 24.08 to 25.08 to fix install failures on newer Fedora versions</li>
+          <li>25.08 ships libsecret natively and brings glibc 2.42 and GCC 15.1</li>
+          <li>Fixed: Update button stayed enabled on every game regardless of DLL version — it now disables when all DLLs are current, and the dropdown only lists groups with an outdated DLL</li>
+          <li>Fixed: Restore menu now refreshes immediately after an update so newly-created backups appear without re-opening the view; bulk updates re-sync Restore menus via a single batched query</li>
+          <li>Fixed: rollback compatibility detection was keying on the wrong version (the version rolled back TO, not FROM). Warnings now fire on the correct version.</li>
+          <li>Changed the flag threshold from "two or more distinct games" to "two or more total rollback events" for the same (DLL, version). Vendor-signed DLLs are identical across every game, so each rollback is an independent vote against that version, even when repeated in the same game.</li>
+        </ul>
+      </description>
+    </release>
     <release version="4.1.0" date="2026-04-13">
       <description>
         <p>Personal game ignore list, DLL status indicators, and UX improvements</p>

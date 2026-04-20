@@ -1619,6 +1619,13 @@ class HighPerformanceUpdateManager:
                 except Exception as e:
                     logger.warning(f"Failed to record update history: {e}")
 
+                # Attach post-update version to active backup for rollback detection
+                try:
+                    from .backup_manager import record_post_update_version_sync
+                    record_post_update_version_sync(target_path, latest_version)
+                except Exception as e:
+                    logger.warning(f"Failed to record post-update version: {e}")
+
                 return make_result(
                     True, old_version=existing_version, new_version=latest_version
                 )

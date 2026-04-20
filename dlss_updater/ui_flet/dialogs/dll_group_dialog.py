@@ -84,6 +84,9 @@ class DLLGroupDialog(ThemeAwareMixin):
         # Themed element references
         self._themed_elements: dict[str, ft.Control] = {}
 
+        # Rollback-flagged DLL versions (populated in show()) keyed by (filename, version)
+        self._flagged_versions: dict[tuple[str, str], dict] = {}
+
     def get_themed_properties(self) -> dict[str, tuple[str, str]]:
         """Return themed property mappings for theme-aware updates."""
         return {}  # Dialog rebuilds on show, individual elements handle themes
@@ -98,12 +101,21 @@ class DLLGroupDialog(ThemeAwareMixin):
         """Build and display the dialog"""
         from dlss_updater.config import LATEST_DLL_VERSIONS
         from dlss_updater.updater import parse_version
+        from dlss_updater.database import db_manager
 
         # Register for theme updates
         self._register_theme_aware()
 
         # Get current theme
         is_dark = self._registry.is_dark
+
+        # Fetch rollback-flagged DLL versions (empty dict if none) for inline chip hints.
+        # Non-fatal: chip is an advisory hint, authoritative check happens at update time.
+        try:
+            self._flagged_versions = await db_manager.get_flagged_dll_versions()
+        except Exception as ex:
+            self.logger.warning(f"Failed to fetch flagged DLL versions: {ex}")
+            self._flagged_versions = {}
 
         # Group DLLs by technology
         grouped_dlls = self._group_dlls()
@@ -521,6 +533,49 @@ class DLLGroupDialog(ThemeAwareMixin):
         else:
             status_icon = ft.Icon(ft.Icons.CHECK_CIRCLE, size=16, color=MD3Colors.get_success(is_dark))
 
+        # Rollback-flagged chip (shown next to filename if this (filename,latest) is flagged)
+        rollback_chip: ft.Control | None = None
+        if update_available and dll.dll_filename and latest_version:
+            key = (dll.dll_filename.lower(), latest_version)
+            flag_entry = self._flagged_versions.get(key)
+            if flag_entry:
+                event_count = flag_entry.get("count", 0)
+                game_count = len(flag_entry.get("games", []))
+                warning_col = MD3Colors.get_warning(is_dark)
+                rollback_chip = ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.WARNING_AMBER, size=11, color=ft.Colors.WHITE),
+                            ft.Text(
+                                f"Rolled back {event_count}x",
+                                size=10,
+                                color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.W_500,
+                            ),
+                        ],
+                        spacing=3,
+                        tight=True,
+                    ),
+                    bgcolor=warning_col,
+                    padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                    border_radius=10,
+                    tooltip=(
+                        f"You've rolled back from v{latest_version} of this DLL {event_count} time"
+                        f"{'s' if event_count != 1 else ''} across {game_count} game"
+                        f"{'s' if game_count != 1 else ''} recently."
+                    ),
+                )
+
+        filename_controls: list[ft.Control] = [
+            ft.Text(
+                dll.dll_filename or "Unknown",
+                size=11,
+                color=MD3Colors.get_text_secondary(is_dark),
+            ),
+        ]
+        if rollback_chip is not None:
+            filename_controls.append(rollback_chip)
+
         return ft.Container(
             content=ft.Row(
                 controls=[
@@ -534,10 +589,11 @@ class DLLGroupDialog(ThemeAwareMixin):
                                 weight=ft.FontWeight.BOLD,
                                 color=MD3Colors.get_text_primary(is_dark),
                             ),
-                            ft.Text(
-                                dll.dll_filename or "Unknown",
-                                size=11,
-                                color=MD3Colors.get_text_secondary(is_dark),
+                            ft.Row(
+                                controls=filename_controls,
+                                spacing=6,
+                                tight=True,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
                         ],
                         spacing=2,

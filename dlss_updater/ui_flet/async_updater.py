@@ -337,7 +337,8 @@ class AsyncUpdateCoordinator:
         game_id: int,
         game_name: str,
         dll_groups: list[str] | None = None,
-        progress_callback: Callable[[UpdateProgress], None] | None = None
+        progress_callback: Callable[[UpdateProgress], None] | None = None,
+        skip_dll_filenames: set[str] | None = None,
     ) -> dict[str, Any]:
         """
         Update DLLs for a single game
@@ -348,6 +349,8 @@ class AsyncUpdateCoordinator:
             dll_groups: Optional list of DLL groups to update (e.g., ["DLSS", "XeSS"]).
                        If None, updates all DLLs.
             progress_callback: Optional callback for progress updates
+            skip_dll_filenames: Optional set of DLL filenames (lowercase) to skip —
+                       used by rollback compatibility warning to skip user-flagged versions.
 
         Returns:
             Dict with 'updated', 'skipped', 'errors' lists and 'success' bool
@@ -407,6 +410,27 @@ class AsyncUpdateCoordinator:
                         'dll_path': '',
                         'reason': f'No DLLs found matching groups: {", ".join(dll_groups)}'
                     })
+                    return results
+
+            # Apply rollback-compat skip filter (user chose "Skip flagged DLLs")
+            if skip_dll_filenames:
+                kept: list = []
+                for game_dll in game_dlls:
+                    fname_lower = (game_dll.dll_filename or "").lower()
+                    if fname_lower in skip_dll_filenames:
+                        self.logger.info(
+                            f"Skipping flagged DLL {game_dll.dll_filename} for {game_name} (rollback compat)"
+                        )
+                        results['skipped'].append({
+                            'dll_type': game_dll.dll_type,
+                            'dll_path': str(game_dll.dll_path),
+                            'reason': 'Skipped — flagged by rollback compatibility check'
+                        })
+                    else:
+                        kept.append(game_dll)
+                game_dlls = kept
+                if not game_dlls:
+                    self.logger.info(f"All DLLs flagged and skipped for {game_name}")
                     return results
 
             total_dlls = len(game_dlls)

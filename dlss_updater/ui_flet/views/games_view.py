@@ -1302,6 +1302,15 @@ class GamesView(ThemeAwareMixin, ft.Column):
         ]
         results = await asyncio.gather(*refresh_tasks, return_exceptions=True)
 
+        # Batch-fetch fresh backup groups so restore menus also re-sync after bulk update
+        try:
+            all_backup_groups = await asyncio.to_thread(
+                db_manager.batch_get_backups_grouped_sync, game_ids
+            )
+        except Exception as ex:
+            self.logger.warning(f"Failed to batch-fetch backup groups: {ex}")
+            all_backup_groups = {}
+
         refreshed = 0
         for game_id, result in zip(game_ids, results):
             if isinstance(result, Exception):
@@ -1310,6 +1319,7 @@ class GamesView(ThemeAwareMixin, ft.Column):
             card = self.game_cards.get(game_id)
             if card and result:
                 await card.refresh_dlls(result)
+                await card.refresh_restore_button(all_backup_groups.get(game_id, {}))
                 refreshed += 1
 
         self.logger.info(f"Refreshed DLL badges for {refreshed}/{len(game_ids)} game cards")
@@ -1319,9 +1329,75 @@ class GamesView(ThemeAwareMixin, ft.Column):
         self.logger.info(f"Update requested for game: {game.name}, group: {dll_group}")
         # Launch the async update using Flet's page.run_task for proper event loop handling
         if self._page_ref:
-            self._page_ref.run_task(self._perform_game_update, game, dll_group)
+            self._page_ref.run_task(self._perform_game_update_with_warning, game, dll_group)
 
-    async def _perform_game_update(self, game, dll_group: str = "all"):
+    async def _perform_game_update_with_warning(self, game, dll_group: str = "all"):
+        """Check rollback-compat flags, optionally show warning dialog, then run update.
+
+        Flagged versions are those the user has rolled back from in >=2 other games
+        recently — an empirical signal that the same version may be problematic here.
+        """
+        skip_dll_filenames: set[str] | None = None
+        try:
+            from dlss_updater.constants import DLL_GROUPS
+            from dlss_updater.config import LATEST_DLL_VERSIONS
+
+            flagged_map = await db_manager.get_flagged_dll_versions()
+            if flagged_map:
+                game_dlls = await db_manager.get_dlls_for_game(game.id)
+
+                # Determine target DLL filenames for this update (respect group filter)
+                target_filenames: set[str] = set()
+                for gdll in game_dlls:
+                    fname = (gdll.dll_filename or "").lower()
+                    if not fname:
+                        continue
+                    if dll_group != "all":
+                        allowed = {d.lower() for d in DLL_GROUPS.get(dll_group, [])}
+                        if fname not in allowed:
+                            continue
+                    target_filenames.add(fname)
+
+                # Cross-reference (filename, latest_version) against flagged set.
+                # DLLs are vendor-signed → a flagged version is bad regardless of which
+                # game rolled back from it, so we don't exclude the current game here.
+                flagged_for_this_update: list[dict] = []
+                for fname in target_filenames:
+                    latest = LATEST_DLL_VERSIONS.get(fname)
+                    if not latest:
+                        continue
+                    key = (fname, latest)
+                    entry = flagged_map.get(key)
+                    if entry:
+                        flagged_for_this_update.append({
+                            "dll_filename": fname,
+                            "target_version": latest,
+                            "event_count": entry.get("count", 0),
+                            "affected_games": entry.get("games", []),
+                            "from_versions": entry.get("from_versions", []),
+                        })
+
+                if flagged_for_this_update:
+                    from dlss_updater.ui_flet.dialogs.rollback_warning_dialog import RollbackWarningDialog
+                    dialog = RollbackWarningDialog(
+                        self._page_ref, self.logger, game.name, flagged_for_this_update
+                    )
+                    result = await dialog.show()
+                    if result == "cancel":
+                        self.logger.info(f"Update cancelled by user (rollback warning): {game.name}")
+                        return
+                    if result == "skip":
+                        skip_dll_filenames = {e["dll_filename"] for e in flagged_for_this_update}
+                        self.logger.info(
+                            f"User chose to skip flagged DLLs: {skip_dll_filenames}"
+                        )
+        except Exception as ex:
+            # Never block an update on the warning path — fail open
+            self.logger.warning(f"Rollback warning check failed: {ex}", exc_info=True)
+
+        await self._perform_game_update(game, dll_group, skip_dll_filenames=skip_dll_filenames)
+
+    async def _perform_game_update(self, game, dll_group: str = "all", skip_dll_filenames: set[str] | None = None):
         """Perform the single-game DLL update"""
         self.logger.info(f"Starting update for game: {game.name} (id: {game.id}, group: {dll_group})")
 
@@ -1355,12 +1431,13 @@ class GamesView(ThemeAwareMixin, ft.Column):
             async def on_progress(progress):
                 self._update_progress_dialog(progress_dialog, progress)
 
-            # Run update with optional group filter
+            # Run update with optional group filter and flagged-DLL skip set
             result = await self.update_coordinator.update_single_game(
                 game.id,
                 game.name,
                 dll_groups=[dll_group] if dll_group != "all" else None,
-                progress_callback=on_progress
+                progress_callback=on_progress,
+                skip_dll_filenames=skip_dll_filenames,
             )
 
             # Close progress dialog
@@ -1369,10 +1446,13 @@ class GamesView(ThemeAwareMixin, ft.Column):
             # Show results
             await self._show_update_results_dialog(game.name, result)
 
-            # Refresh the game card's DLL badges if update succeeded
+            # Refresh the game card's DLL badges AND restore button if update succeeded
+            # (updates create new backups, which must appear in the restore menu)
             if result['success'] and game_card:
                 new_dlls = await db_manager.get_dlls_for_game(game.id)
                 await game_card.refresh_dlls(new_dlls)
+                new_backup_groups = await db_manager.get_backups_grouped_by_dll_type(game.id)
+                await game_card.refresh_restore_button(new_backup_groups)
 
         except Exception as ex:
             self.logger.error(f"Update failed for {game.name}: {ex}", exc_info=True)

@@ -558,6 +558,9 @@ def update_dll(dll_path, latest_dll_path):
                 )
                 # Record successful update in database
                 record_update_history_sync(dll_path, existing_version, latest_version, True)
+                # Attach post-update version to the active backup for rollback detection
+                from dlss_updater.backup_manager import record_post_update_version_sync
+                record_post_update_version_sync(dll_path, latest_version)
                 return ProcessedDLLResult(success=True, backup_path=str(backup_path), dll_type=dll_type)
             else:
                 logger.error(
@@ -687,6 +690,9 @@ def update_dll_with_backup(dll_path, latest_dll_path, pre_created_backup_path=No
                 )
                 # Record successful update in database
                 record_update_history_sync(dll_path, existing_version, latest_version, True)
+                # Attach post-update version to the active backup for rollback detection
+                from dlss_updater.backup_manager import record_post_update_version_sync
+                record_post_update_version_sync(dll_path, latest_version)
                 return ProcessedDLLResult(success=True, backup_path=str(backup_path), dll_type=dll_type)
             else:
                 logger.error(

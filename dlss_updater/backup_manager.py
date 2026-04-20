@@ -89,6 +89,24 @@ def record_backup_metadata_sync(dll_path: Path, backup_path: Path) -> int | None
         return None
 
 
+def record_post_update_version_sync(dll_path: Path, post_update_version: str) -> None:
+    """Record post-update version on the most recent active backup for this DLL.
+
+    Use this when calling from sync code running in a thread pool. Silently no-ops
+    if no active backup exists for the DLL (update without backup).
+
+    Args:
+        dll_path: Path to the DLL that was just updated
+        post_update_version: The version the DLL was updated TO
+    """
+    if not post_update_version:
+        return
+    try:
+        db_manager._record_post_update_version(str(dll_path), post_update_version)
+    except Exception as e:
+        logger.error(f"Error recording post-update version for {dll_path}: {e}", exc_info=True)
+
+
 async def record_backup_metadata(dll_path: Path, backup_path: Path) -> int | None:
     """
     Record backup metadata in database (async version).
@@ -216,8 +234,9 @@ async def restore_dll_from_backup(backup_id: int) -> tuple[bool, str]:
             new_version = await get_dll_version_async(dll_path)
             await db_manager.update_game_dll_version(game_dll.id, new_version)
 
-            # Mark backup as inactive (removes it from Backups page)
-            await db_manager.mark_backup_inactive(backup_id)
+            # Mark backup as restored (removes it from Backups page AND flags
+            # it as a user-initiated rollback for compatibility detection)
+            await db_manager.mark_backup_restored(backup_id)
 
             # Cleanup temporary backup
             if temp_backup and temp_backup.exists():
