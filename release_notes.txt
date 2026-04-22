@@ -1,3 +1,14 @@
+Version 4.1.2:
+Windows Taskbar Pinning Fix (Issue #184):
+  - Fixed: Pinning the app to the taskbar previously pinned flet.exe (the Flet GUI engine),
+    causing a white screen when launched from the pinned shortcut.
+  - The app now sets AppUserModelID ("io.github.recol.DLSSUpdater") and RelaunchCommand on
+    flet.exe's window at startup using SHGetPropertyStoreForWindow. Windows uses RelaunchCommand
+    when pinning, so the pinned shortcut correctly points to DLSS_Updater.exe.
+  - Also sets SetCurrentProcessExplicitAppUserModelID in the main process for proper Jump List support.
+  - MSI installer: Start Menu shortcut now includes the System.AppUserModel.ID property so
+    pinning from the Start Menu works correctly without running the app first.
+
 Version 4.1.1:
 DLL Rollback Compatibility Warning:
   - New feature that warns you before updating to a DLL version you've already rolled back from

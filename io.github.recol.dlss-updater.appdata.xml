@@ -64,6 +64,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="4.1.2" date="2026-04-22">
+      <description>
+        <p>Windows taskbar pinning fix (Issue #184)</p>
+        <ul>
+          <li>Fixed: pinning the running app to the taskbar previously pinned flet.exe (the Flet GUI engine), causing a white screen when relaunching from the pin</li>
+          <li>AppUserModelID and RelaunchCommand are now set on flet.exe's window at startup so Windows pins DLSS_Updater.exe instead</li>
+          <li>Start Menu shortcut in the MSI installer now carries the System.AppUserModel.ID property for correct taskbar association</li>
+        </ul>
+      </description>
+    </release>
     <release version="4.1.1" date="2026-04-20">
       <description>
         <p>DLL rollback compatibility warning and Flatpak runtime upgrade (Issue #204)</p>
