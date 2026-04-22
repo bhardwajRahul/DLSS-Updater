@@ -47,9 +47,9 @@ What if you could update all the DLSS/XeSS/FSR DLLs for the games detected on yo
 - Build your own game blacklist.
 
 
-The current supported DLL included is DLSS 4.5 (version 3.10.5.3), and DLSS 4.5 for FG/RR (version 3.10.5).
+The current supported DLL included is DLSS 4.5 (version 3.10.6.0), and DLSS 4.5 for FG/RR (version 3.10.5).
 The current supported DLL included is FSR 4 (version 4.0.2.0).
-The current supported XeSS DLLs include XeSS 2.0.2, XeSS Frame Generation 1.2.2, and XeLL 1.2.1. Please see the [Intel XeSS releases](https://github.com/intel/xess/releases) for game support details.
+The current supported XeSS DLLs include XeSS 2.0.2, XeSS Frame Generation 1.3.1, and XeLL 1.3.0.5. Please see the [Intel XeSS releases](https://github.com/intel/xess/releases) for game support details.
 
 ## GUI
 <img width="1117" height="761" alt="games_tab" src="https://github.com/user-attachments/assets/70bed810-db3d-4381-ada5-d77bc8b6c7b8" />
